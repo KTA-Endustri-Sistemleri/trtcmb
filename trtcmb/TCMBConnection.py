@@ -31,17 +31,51 @@ class TCMBConnection:
             # should be error
             return False
         currency_list = TCMBCurrency.get_list_of_enabled_currencies()
-        # dummy assignment
+        
+        # Determine effective start date
+        # 1. Start with global setting or fallback
         tcmb_start_date = datetime.date.today()
         if self.start_date is not None and self.start_date > datetime.date(1950, 1, 2):
             tcmb_start_date = self.start_date
-        # for currency in currency_list:
-        # TODO: get the earliest Exchange Rate Date on each Currency to reduce TCMB query size
-        tcmb_exchange_rates = self.get_exchange_rates(currency_list=currency_list,
-                                                      from_date=tcmb_start_date,
-                                                      to_date=datetime.date.today())
-        for tcmb_exchange_rate_data in tcmb_exchange_rates:
-            TCMBCurrencyExchange.commit_single_currency_exchange_rate(tcmb_exchange_rate_data, self.enable_update)
+            
+        # 2. Check for the last successful exchange rate in DB to avoid re-fetching old data
+        last_rate_date = frappe.db.sql("""
+            SELECT MAX(date) FROM `tabCurrency Exchange`
+            WHERE to_currency = 'TRY'
+        """)
+        
+        if last_rate_date and last_rate_date[0][0]:
+            # If we have data, resume from the day AFTER the last record
+            last_date = last_rate_date[0][0]
+            if isinstance(last_date, str):
+                last_date = datetime.datetime.strptime(last_date, "%Y-%m-%d").date()
+            tcmb_start_date = last_date + datetime.timedelta(days=1)
+        
+        target_end_date = datetime.date.today()
+        
+        # Security check: Don't go into the future
+        if tcmb_start_date > target_end_date:
+            return target_end_date
+
+        # Chunking Logic: Process in 15-day chunks to prevent API timeouts
+        chunk_size_days = 15
+        current_chunk_start = tcmb_start_date
+        
+        while current_chunk_start <= target_end_date:
+            current_chunk_end = current_chunk_start + datetime.timedelta(days=chunk_size_days)
+            if current_chunk_end > target_end_date:
+                current_chunk_end = target_end_date
+            
+            # Fetch for this chunk
+            tcmb_exchange_rates = self.get_exchange_rates(currency_list=currency_list,
+                                                          from_date=current_chunk_start,
+                                                          to_date=current_chunk_end)
+            
+            for tcmb_exchange_rate_data in tcmb_exchange_rates:
+                TCMBCurrencyExchange.commit_single_currency_exchange_rate(tcmb_exchange_rate_data, self.enable_update)
+            
+            # Move to next chunk
+            current_chunk_start = current_chunk_end + datetime.timedelta(days=1)
 
         return datetime.datetime.today().date()
 
