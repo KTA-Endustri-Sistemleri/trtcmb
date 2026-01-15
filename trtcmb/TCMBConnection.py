@@ -92,7 +92,7 @@ class TCMBConnection:
         url = TCMBCurrency.service_path + series + tcmb_start_date + tcmb_end_date + return_type
         return requests.get(url, headers={'key': self.key}).json()
 
-    def get_single_exchange_rate(self, currency: str, for_date: datetime.date, purpose: str):
+    def get_single_exchange_rate(self, currency: str, for_date: datetime.date, purpose: str, search_forward: bool = False):
         # dummy assignment
         currency_series_data = ""
         if purpose == "for_buying":
@@ -109,10 +109,18 @@ class TCMBConnection:
             currency_response = currency_series_data.replace(self.inner_separator,
                                                              TCMBCurrencyExchange.response_separator)
             if response_dict.get("items")[0].get(currency_response) is None:
-                exchange_rate_date = datetime.datetime.strptime(response_dict.get("items")[0].get("Tarih"),
+                # Check for weekend or forced forward search
+                if search_forward or for_date.weekday() >= 5: # Sat or Sun
+                     exchange_rate_date = datetime.datetime.strptime(response_dict.get("items")[0].get("Tarih"),
+                                                                TCMBCurrencyExchange.tcmb_date_format).date() + \
+                                     self.a_day
+                     search_forward = True
+                else:
+                     exchange_rate_date = datetime.datetime.strptime(response_dict.get("items")[0].get("Tarih"),
                                                                 TCMBCurrencyExchange.tcmb_date_format).date() - \
                                      self.a_day
-                new_dict = self.get_single_exchange_rate(currency, exchange_rate_date, purpose)
+                     
+                new_dict = self.get_single_exchange_rate(currency, exchange_rate_date, purpose, search_forward=search_forward)
                 response_dict["items"][0][currency_response] = new_dict["items"][0][currency_response]
         return response_dict
 
@@ -137,9 +145,14 @@ class TCMBConnection:
                 for tuple_key in list(currency_tuple):
                     reference_dict[reference_date + tuple_key] = currency_tuple.get(tuple_key)
                     if currency_tuple.get(tuple_key) is None:
-                        exchange_rate_date = datetime.datetime.strptime(reference_date,
-                                                                        TCMBCurrencyExchange.tcmb_date_format).date() - \
-                                             self.a_day
+                        current_date_obj = datetime.datetime.strptime(reference_date, TCMBCurrencyExchange.tcmb_date_format).date()
+                        search_forward = False
+                        if current_date_obj.weekday() >= 5: # Sat or Sun
+                             exchange_rate_date = current_date_obj + self.a_day
+                             search_forward = True
+                        else:
+                             exchange_rate_date = current_date_obj - self.a_day
+
                         # tcmb_series_split = str(tcmb_series).split(".")
                         tcmb_series_split = str(tuple_key).split("_")
                         # TODO: Check later if purpose is blank or not
@@ -151,7 +164,7 @@ class TCMBConnection:
                         if reference_dict.get(
                                 datetime.datetime.strftime(exchange_rate_date, '%d-%m-%Y') + tuple_key) is None:
                             new_dict = self.get_single_exchange_rate(tcmb_series_split[2], exchange_rate_date,
-                                                                     purpose=purpose)
+                                                                     purpose=purpose, search_forward=search_forward)
                             currency_tuple[tuple_key] = new_dict["items"][0][tuple_key]
                         else:
                             currency_tuple[tuple_key] = reference_dict.get(
